@@ -196,6 +196,7 @@ rememberOmxLaunchContext({ argv1: process.argv[1], cwd: process.cwd(), env: proc
 import {
   classifySpawnError,
   resolveTmuxBinaryForPlatform,
+  resolveCommandPathForPlatform,
   spawnPlatformCommandSync,
 } from "../utils/platform-command.js";
 import { buildHookEvent } from "../hooks/extensibility/events.js";
@@ -8771,10 +8772,13 @@ export function isCodexVersionRequest(args: string[]): boolean {
 export function buildWindowsPromptCommand(
   command: string,
   args: string[],
+  resolveCommand: (command: string) => string = (candidate) =>
+    resolveCommandPathForPlatform(candidate) || candidate,
 ): string {
+  const resolvedCommand = resolveCommand(command);
   const invocation = [
     "&",
-    quotePowerShellArg(command),
+    quotePowerShellArg(resolvedCommand),
     ...args.map(quotePowerShellArg),
   ].join(" ");
   const wrappedCommand = [
