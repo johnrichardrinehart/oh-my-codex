@@ -1494,7 +1494,21 @@ export function buildNativePostToolUseOutput(
   if (!normalized.isBash) return null;
 
   const combined = `${normalized.stderrText}\n${normalized.stdoutText}`.trim();
-  if (hasActionableBashHardFailure(normalized)) {
+  const hardFailureSignal = [
+    normalized.stderrText,
+    safeString(normalized.parsedToolResponse?.error),
+    safeString(normalized.parsedToolResponse?.message),
+    safeString(normalized.parsedToolResponse?.details),
+  ]
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+  if (
+    normalized.exitCode !== null
+    && normalized.exitCode !== 0
+    && hardFailureSignal.length > 0
+    && containsHardFailure(hardFailureSignal)
+  ) {
     return {
       decision: "block",
       reason: "The Bash output indicates a command/setup failure that should be fixed before retrying.",
