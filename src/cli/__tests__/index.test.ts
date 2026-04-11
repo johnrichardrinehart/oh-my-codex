@@ -14,6 +14,7 @@ import {
   buildTmuxShellCommand,
   buildTmuxPaneCommand,
   shouldSourceTmuxPaneShellRc,
+  buildDetachedTmuxPaneCommand,
   buildWindowsPromptCommand,
   buildWindowsDetachedChildCommand,
   buildTmuxSessionName,
@@ -27,7 +28,9 @@ import {
   resolveCodexLaunchPolicy,
   resolveEffectiveLeaderLaunchPolicyOverride,
   resolveEnvLaunchPolicyOverride,
+  resolveInteractiveTerminalStdio,
   resolveLeaderLaunchPolicyOverride,
+  resolveCodexLauncher,
   classifyCodexExecFailure,
   resolveSignalExitCode,
   parseTmuxPaneSnapshot,
@@ -3675,8 +3678,18 @@ describe("resolveCodexLaunchPolicy", () => {
     assert.equal(resolveCodexLaunchPolicy({}, "linux", true, false, false, true), "direct");
   });
 
-  it("launches directly when stdout is not a tty outside tmux", () => {
-    assert.equal(resolveCodexLaunchPolicy({}, "linux", true, false, true, false), "direct");
+  it("uses detached tmux when stdout is wrapped but stderr still has the terminal", () => {
+    assert.equal(
+      resolveCodexLaunchPolicy({}, "linux", true, false, true, false, undefined, true),
+      "detached-tmux",
+    );
+  });
+
+  it("launches directly when both stdout and stderr are not tty outside tmux", () => {
+    assert.equal(
+      resolveCodexLaunchPolicy({}, "linux", true, false, true, false, undefined, false),
+      "direct",
+    );
   });
 
   it("launches directly when tmux is unavailable outside tmux", () => {
@@ -3685,6 +3698,46 @@ describe("resolveCodexLaunchPolicy", () => {
 
   it("launches directly on native Windows when tmux is unavailable", () => {
     assert.equal(resolveCodexLaunchPolicy({}, "win32", false, true), "direct");
+  });
+});
+
+describe("resolveInteractiveTerminalStdio", () => {
+  it("routes stdout to stderr when stdout is wrapped but stdin/stderr are tty", () => {
+    assert.deepEqual(resolveInteractiveTerminalStdio(true, false, true), [
+      "inherit",
+      2,
+      2,
+    ]);
+  });
+
+  it("uses inherit when stdout is already tty", () => {
+    assert.equal(resolveInteractiveTerminalStdio(true, true, true), "inherit");
+  });
+
+  it("uses inherit when stdin is not tty", () => {
+    assert.equal(resolveInteractiveTerminalStdio(false, false, true), "inherit");
+  });
+});
+
+describe("resolveCodexLauncher", () => {
+  it("uses explicit OMX_CODEX_BIN when provided", () => {
+    assert.equal(
+      resolveCodexLauncher({ OMX_CODEX_BIN: "/tmp/codex-wrapper", HOME: "/home/example" }),
+      "/tmp/codex-wrapper",
+    );
+  });
+
+  it("falls back to the nix wrapper script in HOME when codex is not on PATH", async () => {
+    const home = await mkdtemp(join(tmpdir(), "omx-codex-launcher-home-"));
+    try {
+      await writeFile(join(home, "codex-cli-nix.sh"), "#!/bin/sh\nexit 0\n");
+      assert.equal(
+        resolveCodexLauncher({ HOME: home, PATH: "/run/current-system/sw/bin" }),
+        join(home, "codex-cli-nix.sh"),
+      );
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
   });
 });
 
@@ -4794,6 +4847,47 @@ exit 0
     assert.doesNotMatch(leaderCmd!, /__detached-post-launch|Test-Path -LiteralPath/);
   });
 
+  it("buildDetachedWindowsBootstrapScript targets the resolved tmux-compatible command", () => {
+    const script = buildDetachedWindowsBootstrapScript(
+      "omx-demo",
+      "powershell.exe -NoLogo -NoExit -EncodedCommand abc",
+      2500,
+      "C:\\Program Files\\psmux\\psmux.exe",
+    );
+    assert.match(script, /const tmuxCommand = "C:\\\\Program Files\\\\psmux\\\\psmux\.exe";/);
+    assert.match(script, /execFileSync\(tmuxCommand, \['send-keys'/);
+    assert.doesNotMatch(script, /execFileSync\('tmux'/);
+  });
+
+  it("buildDetachedSessionBootstrapSteps forwards PATH to detached tmux session", () => {
+    const originalPath = process.env.PATH;
+    process.env.PATH = "/nix/store/test-codex/bin:/nix/store/test-node/bin:/usr/bin:/bin";
+    try {
+      const steps = buildDetachedSessionBootstrapSteps(
+        "omx-demo",
+        "/tmp/project",
+        "'codex' '--model' 'gpt-5'",
+        "'node' '/tmp/omx.js' 'hud' '--watch'",
+        null,
+      );
+      const newSession = steps.find((step) => step.name === "new-session");
+      assert.ok(newSession);
+      assert.equal(
+        newSession!.args.includes("-e") &&
+          newSession!.args.some((arg) =>
+            arg === "PATH=/nix/store/test-codex/bin:/nix/store/test-node/bin:/usr/bin:/bin",
+          ),
+        true,
+      );
+    } finally {
+      if (typeof originalPath === "string") {
+        process.env.PATH = originalPath;
+      } else {
+        delete process.env.PATH;
+      }
+    }
+  });
+
   it("buildDetachedSessionBootstrapSteps gives the POSIX leader persistent lifecycle ownership", () => {
     const releaseMarkerPath = "/tmp/project/.omx/runtime/detached-release/omx-session-123.release";
     const steps = buildDetachedSessionBootstrapSteps(
@@ -5608,6 +5702,28 @@ describe("buildTmuxPaneCommand", () => {
       "should fall back to /bin/sh",
     );
     assert.ok(!result.includes(" -lc "), "should not use a login shell");
+  });
+});
+
+describe("buildDetachedTmuxPaneCommand", () => {
+  it("does not source shell rc files for detached tmux launches", () => {
+    const result = buildDetachedTmuxPaneCommand(
+      "codex",
+      ["--model", "gpt-5"],
+      "/usr/bin/zsh",
+    );
+    assert.ok(
+      result.startsWith("'/usr/bin/zsh' -lc "),
+      "should use the requested shell",
+    );
+    assert.ok(
+      !result.includes("source ~/.zshrc"),
+      "should not source .zshrc for detached launches",
+    );
+    assert.ok(
+      result.includes("exec "),
+      "should exec the command directly",
+    );
   });
 });
 

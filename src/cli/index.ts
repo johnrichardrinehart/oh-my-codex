@@ -900,13 +900,14 @@ export function resolveCodexLaunchPolicy(
   stdinIsTTY: boolean = Boolean(process.stdin.isTTY),
   stdoutIsTTY: boolean = Boolean(process.stdout.isTTY),
   explicitPolicy?: CodexLaunchPolicy,
+  stderrIsTTY: boolean = Boolean(process.stderr.isTTY),
 ): CodexLaunchPolicy {
   if (explicitPolicy === "direct") return "direct";
   if (env.TMUX) return "inside-tmux";
   if (explicitPolicy === "detached-tmux") return tmuxAvailable ? "detached-tmux" : "direct";
   if (_platform === "win32") return "direct";
   if (nativeWindows) return "direct";
-  if (!stdinIsTTY || !stdoutIsTTY) return "direct";
+  if (!stdinIsTTY || (!stdoutIsTTY && !stderrIsTTY)) return "direct";
   return tmuxAvailable ? "detached-tmux" : "direct";
 }
 
@@ -2050,9 +2051,11 @@ function runCodexBlocking(
   launchArgs: string[],
   codexEnv: NodeJS.ProcessEnv,
 ): void {
-  const { result } = spawnPlatformCommandSync("codex", launchArgs, {
+  const stdio = resolveInteractiveTerminalStdio();
+  const codexCommand = resolveCodexLauncher(codexEnv);
+  const { result } = spawnPlatformCommandSync(codexCommand, launchArgs, {
     cwd,
-    stdio: "inherit",
+    stdio,
     env: codexEnv,
     encoding: "utf-8",
   });
@@ -2214,6 +2217,37 @@ export function prependOmxRuntimeCommandShimToEnv(
   return result;
 }
 
+export function resolveCodexLauncher(env: NodeJS.ProcessEnv = process.env): string {
+  const explicit =
+    (typeof env.OMX_CODEX_BIN === "string" && env.OMX_CODEX_BIN.trim() !== ""
+      ? env.OMX_CODEX_BIN.trim()
+      : typeof env.CODEX_BIN === "string" && env.CODEX_BIN.trim() !== ""
+        ? env.CODEX_BIN.trim()
+        : null);
+  if (explicit) return explicit;
+
+  const resolvedOnPath = resolveCommandPathForPlatform("codex", process.platform, env);
+  if (resolvedOnPath) return resolvedOnPath;
+
+  const home = typeof env.HOME === "string" ? env.HOME.trim() : "";
+  if (home) {
+    const nixWrapper = join(home, "codex-cli-nix.sh");
+    if (existsSync(nixWrapper)) return nixWrapper;
+  }
+
+  return "codex";
+}
+
+export function resolveInteractiveTerminalStdio(
+  stdinIsTTY: boolean = Boolean(process.stdin.isTTY),
+  stdoutIsTTY: boolean = Boolean(process.stdout.isTTY),
+  stderrIsTTY: boolean = Boolean(process.stderr.isTTY),
+): "inherit" | ["inherit", 2, 2] {
+  if (stdinIsTTY && !stdoutIsTTY && stderrIsTTY) {
+    return ["inherit", 2, 2];
+  }
+  return "inherit";
+}
 export interface DetachedSessionTmuxStep {
   name: string;
   args: string[];
@@ -5047,6 +5081,12 @@ export function buildDetachedSessionBootstrapSteps(
     worktreeDirty: false,
   },
 ): DetachedSessionTmuxStep[] {
+  const pathValue =
+    typeof process.env.PATH === "string" && process.env.PATH.trim() !== ""
+      ? process.env.PATH
+      : typeof process.env.Path === "string" && process.env.Path.trim() !== ""
+        ? process.env.Path
+        : undefined;
   const detachedLeaderCmd = nativeWindows
     ? buildDetachedWindowsLeaderCommand(
         cwd, sessionName, codexCmd, sessionId, codexHomeOverride,
@@ -6107,9 +6147,11 @@ async function runCodex(
     if (!detachedPreflight) {
       throw new DetachedLaunchSafetyError("establishment", new Error("detached launch requires a frozen available preflight"), { transitions: ["D0"], rollback: { attempted: [], failures: [] } });
     }
-    const codexCmd = buildTmuxPaneCommand("codex", launchArgs);
+    // Not in tmux: create a new tmux session with codex + HUD pane
+    const codexLauncher = resolveCodexLauncher(codexEnvWithNotify);
+    const codexCmd = buildDetachedTmuxPaneCommand(codexLauncher, launchArgs);
     const detachedWindowsCodexCmd = nativeWindows
-      ? buildWindowsDetachedChildCommand("codex", launchArgs)
+      ? buildWindowsPromptCommand(codexLauncher, launchArgs)
       : null;
     const sessionName = buildDetachedTmuxSessionName(cwd, sessionId);
     const contextKey = runtimeContext?.madmaxDetachedContext ?? process.env[OMX_MADMAX_DETACHED_CONTEXT_ENV]?.trim();
@@ -6287,7 +6329,21 @@ async function runCodex(
             }
             return { acknowledged: false };
           },
-          attachOrReturn: async () => { if (attachStep) execTmuxFileSync(attachStep.args, { stdio: "inherit" }); },
+          attachOrReturn: async () => {
+            if (!attachStep) return;
+            try {
+              const startedAtMs = Date.now();
+              execTmuxFileSync(attachStep.args, { stdio: resolveInteractiveTerminalStdio() });
+              assertDetachedAttachDidNotNoop(
+                sessionName,
+                Date.now() - startedAtMs,
+                process.env,
+              );
+            } catch (error) {
+              logCliOperationFailure(error);
+              printDetachedAttachHint(sessionName);
+            }
+          },
           rollback: async (_ownedRecord, report) => {
             const attempt = async (step: DetachedRollbackStep, operation: () => Promise<void> | void): Promise<void> => {
               report.rollback.attempted.push(step);
@@ -6303,6 +6359,31 @@ async function runCodex(
                   runDetachedLeaderMutation(detachedLeaderAuthority, step.args);
                 });
               }
+              continue;
+            }
+            if (
+              finalizeStep.name === "register-resize-hook" &&
+              hookTarget &&
+              hookName
+            ) {
+              registeredHookTarget = hookTarget;
+              registeredHookName = hookName;
+            }
+            if (
+              finalizeStep.name === "register-client-attached-reconcile" &&
+              clientAttachedHookName
+            ) {
+              registeredClientAttachedHookName = clientAttachedHookName;
+            }
+            if (finalizeStep.name === "reconcile-hud-resize") {
+              registerDetachedHudLayoutReconcileHook({
+                hudPaneId,
+                detachedLeaderPaneId,
+                cwd,
+                sessionId,
+                omxBin,
+                omxRootOverride,
+              });
             }
           },
         },
@@ -6375,6 +6456,12 @@ function killTmuxPane(paneId: string): void {
     logCliOperationFailure(err);
     // Pane may already be gone; ignore.
   }
+}
+
+function printDetachedAttachHint(sessionName: string): void {
+  process.stderr.write(
+    `[omx] Detached tmux session is still running. Attach manually with: tmux attach-session -t ${sessionName}\n`,
+  );
 }
 
 export function buildTmuxShellCommand(command: string, args: string[]): string {
@@ -6468,6 +6555,18 @@ export function buildTmuxPaneCommand(
   const shellBin = ALLOWED_SHELLS.has(rawShell) ? rawShell : "/bin/sh";
   const inner = `${rcSource}exec ${bareCmd}`;
   return `${quoteShellArg(shellBin)} -c ${quoteShellArg(inner)}`;
+}
+
+export function buildDetachedTmuxPaneCommand(
+  command: string,
+  args: string[],
+  shellPath: string | undefined = process.env.SHELL,
+): string {
+  const bareCmd = buildTmuxShellCommand(command, args);
+  const rawShell =
+    shellPath && shellPath.trim() !== "" ? shellPath.trim() : "/bin/sh";
+  const shellBin = ALLOWED_SHELLS.has(rawShell) ? rawShell : "/bin/sh";
+  return `${quoteShellArg(shellBin)} -lc ${quoteShellArg(`exec ${bareCmd}`)}`;
 }
 
 function quoteShellArg(value: string): string {
