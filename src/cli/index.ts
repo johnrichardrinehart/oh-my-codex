@@ -4,7 +4,7 @@
  */
 
 import { execFileSync, spawn } from "child_process";
-import { basename, dirname, isAbsolute, join, posix, relative, resolve, win32 } from "path";
+import { basename, delimiter, dirname, isAbsolute, join, posix, relative, resolve, win32 } from "path";
 import { chmodSync, closeSync, constants as fsConstants, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "fs";
 import { copyFile, cp, lstat, mkdir, open, readFile, readdir, rm, stat, symlink, utimes, writeFile } from "fs/promises";
 import { constants as osConstants, homedir } from "os";
@@ -384,6 +384,7 @@ const TEAM_INHERIT_LEADER_FLAGS_ENV = "OMX_TEAM_INHERIT_LEADER_FLAGS";
 const OMX_BYPASS_DEFAULT_SYSTEM_PROMPT_ENV = "OMX_BYPASS_DEFAULT_SYSTEM_PROMPT";
 const OMX_MODEL_INSTRUCTIONS_FILE_ENV = "OMX_MODEL_INSTRUCTIONS_FILE";
 const OMX_INSTANCE_OPTION = "@omx_instance_id";
+const OMX_AUTO_ADD_GIT_COMMON_DIR_ENV = "OMX_AUTO_ADD_GIT_COMMON_DIR";
 const OMX_RALPH_APPEND_INSTRUCTIONS_FILE_ENV =
   "OMX_RALPH_APPEND_INSTRUCTIONS_FILE";
 const OMX_AUTORESEARCH_APPEND_INSTRUCTIONS_FILE_ENV =
@@ -4068,7 +4069,9 @@ export async function execWithOverlay(args: string[]): Promise<void> {
       : null;
     const codexArgs = injectModelInstructionsBypassArgs(
       cwd,
-      ["exec", ...normalizedArgs],
+      augmentLinkedWorktreeLaunchArgs(cwd, ["exec", ...normalizedArgs], {
+        codexHomeOverride,
+      }),
       process.env,
       sessionModelInstructionsPath(cwd, sessionId),
     );
@@ -4180,6 +4183,213 @@ export function resolveWorkerSparkModel(
     }
   }
   return undefined;
+}
+
+function readSandboxModeOverride(value: string): string | null {
+  const match = value.match(/^\s*sandbox_mode\s*=\s*(.+)\s*$/);
+  if (!match) return null;
+  const parsed = parseTomlStringValue(match[1] || "");
+  return parsed.trim() || null;
+}
+
+function parseBooleanLikeSetting(value: string | null | undefined): boolean | null {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) return null;
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  return null;
+}
+
+export function readTomlTableString(
+  content: string,
+  table: string,
+  key: string,
+): string | null {
+  let currentTable: string | null = null;
+  const lines = content.split(/\r?\n/);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const tableMatch = trimmed.match(/^\[([^\]]+)\]\s*(#.*)?$/);
+    if (tableMatch) {
+      currentTable = tableMatch[1] || null;
+      continue;
+    }
+    if (currentTable !== table) continue;
+    const match = line.match(/^\s*([A-Za-z0-9_.-]+)\s*=\s*(.*?)\s*(?:#.*)?$/);
+    if (!match || match[1] !== key) continue;
+    return parseTomlStringValue(match[2]);
+  }
+  return null;
+}
+
+function isAutoAddGitCommonDirEnabled(
+  cwd: string,
+  options: {
+    codexHomeOverride?: string;
+    env?: NodeJS.ProcessEnv;
+    readConfigFile?: (path: string, encoding: BufferEncoding) => string;
+  } = {},
+): boolean {
+  const env = options.env ?? process.env;
+  const envValue = parseBooleanLikeSetting(env[OMX_AUTO_ADD_GIT_COMMON_DIR_ENV]);
+  if (envValue != null) return envValue;
+
+  const configPath = resolveCodexConfigPathForLaunch(cwd, {
+    ...env,
+    ...(options.codexHomeOverride ? { CODEX_HOME: options.codexHomeOverride } : {}),
+  });
+  if (!existsSync(configPath) && !options.readConfigFile) return false;
+
+  try {
+    const readConfigFile = options.readConfigFile ?? readFileSync;
+    const content = readConfigFile(configPath, 'utf-8');
+    return parseBooleanLikeSetting(
+      readTomlTableString(content, 'env', OMX_AUTO_ADD_GIT_COMMON_DIR_ENV),
+    ) === true;
+  } catch {
+    return false;
+  }
+}
+
+export function resolveEffectiveSandboxMode(
+  cwd: string,
+  args: readonly string[],
+  options: {
+    codexHomeOverride?: string;
+    env?: NodeJS.ProcessEnv;
+    readConfigFile?: (path: string, encoding: BufferEncoding) => string;
+  } = {},
+): string | null {
+  let sandboxMode: string | null = null;
+
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+
+    if (arg === CODEX_BYPASS_FLAG || arg === '--yolo') {
+      sandboxMode = 'danger-full-access';
+      continue;
+    }
+
+    if (arg === '--full-auto') {
+      sandboxMode = 'workspace-write';
+      continue;
+    }
+
+    if (arg === '--sandbox' || arg === '-s') {
+      const next = args[i + 1];
+      if (typeof next === 'string' && next.trim() !== '') {
+        sandboxMode = next.trim();
+        i += 1;
+      }
+      continue;
+    }
+
+    if (arg.startsWith('--sandbox=')) {
+      sandboxMode = arg.slice('--sandbox='.length).trim() || sandboxMode;
+      continue;
+    }
+
+    if (arg.startsWith('-s=')) {
+      sandboxMode = arg.slice('-s='.length).trim() || sandboxMode;
+      continue;
+    }
+
+    if (arg === CONFIG_FLAG || arg === LONG_CONFIG_FLAG) {
+      const next = args[i + 1];
+      if (typeof next === 'string') {
+        const override = readSandboxModeOverride(next);
+        if (override) sandboxMode = override;
+        i += 1;
+      }
+      continue;
+    }
+
+    if (arg.startsWith(LONG_CONFIG_FLAG + '=')) {
+      const override = readSandboxModeOverride(
+        arg.slice((LONG_CONFIG_FLAG + '=').length),
+      );
+      if (override) sandboxMode = override;
+    }
+  }
+
+  if (sandboxMode) return sandboxMode;
+
+  const env = options.env ?? process.env;
+  const configPath = resolveCodexConfigPathForLaunch(cwd, {
+    ...env,
+    ...(options.codexHomeOverride ? { CODEX_HOME: options.codexHomeOverride } : {}),
+  });
+  if (!existsSync(configPath) && !options.readConfigFile) return null;
+
+  try {
+    const readConfigFile = options.readConfigFile ?? readFileSync;
+    const content = readConfigFile(configPath, 'utf-8');
+    return readTopLevelTomlString(content, 'sandbox_mode');
+  } catch {
+    return null;
+  }
+}
+
+export function resolveLinkedWorktreeCommonDir(
+  cwd: string,
+  gitValueReader: (cwd: string, args: string[]) => string | undefined = tryReadGitValue,
+): string | null {
+  const gitDir = gitValueReader(cwd, ['rev-parse', '--git-dir']);
+  const commonDir = gitValueReader(cwd, ['rev-parse', '--git-common-dir']);
+  if (!gitDir || !commonDir) return null;
+
+  const resolvedGitDir = resolve(cwd, gitDir);
+  const resolvedCommonDir = resolve(cwd, commonDir);
+  if (resolvedGitDir === resolvedCommonDir) return null;
+  return resolvedCommonDir;
+}
+
+function hasAddDirArg(args: readonly string[], targetPath: string): boolean {
+  const resolvedTarget = resolve(targetPath);
+
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === '--add-dir') {
+      const next = args[i + 1];
+      if (typeof next === 'string' && resolve(next) === resolvedTarget) return true;
+      i += 1;
+      continue;
+    }
+
+    if (arg.startsWith('--add-dir=')) {
+      const value = arg.slice('--add-dir='.length);
+      if (value && resolve(value) === resolvedTarget) return true;
+    }
+  }
+
+  return false;
+}
+
+export function augmentLinkedWorktreeLaunchArgs(
+  cwd: string,
+  args: string[],
+  options: {
+    codexHomeOverride?: string;
+    env?: NodeJS.ProcessEnv;
+    gitValueReader?: (cwd: string, args: string[]) => string | undefined;
+    readConfigFile?: (path: string, encoding: BufferEncoding) => string;
+  } = {},
+): string[] {
+  if (!isAutoAddGitCommonDirEnabled(cwd, options)) return [...args];
+
+  const sandboxMode = resolveEffectiveSandboxMode(cwd, args, {
+    codexHomeOverride: options.codexHomeOverride,
+    env: options.env,
+    readConfigFile: options.readConfigFile,
+  });
+  if (sandboxMode !== 'workspace-write') return [...args];
+
+  const commonDir = resolveLinkedWorktreeCommonDir(cwd, options.gitValueReader);
+  if (!commonDir || hasAddDirArg(args, commonDir)) return [...args];
+
+  return [...args, '--add-dir', commonDir];
 }
 
 function isModelInstructionsOverride(value: string): boolean {
@@ -5948,7 +6158,7 @@ async function runCodex(
   void preLaunchOptions;
   const launchArgs = injectModelInstructionsBypassArgs(
     cwd,
-    args,
+    augmentLinkedWorktreeLaunchArgs(cwd, args, { codexHomeOverride }),
     process.env,
     sessionModelInstructionsPath(cwd, sessionId),
   );

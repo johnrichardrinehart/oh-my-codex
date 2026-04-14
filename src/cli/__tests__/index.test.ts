@@ -36,7 +36,11 @@ import {
   parseTmuxPaneSnapshot,
   findHudWatchPaneIds,
   buildHudPaneCleanupTargets,
+  readTomlTableString,
   readTopLevelTomlString,
+  resolveEffectiveSandboxMode,
+  resolveLinkedWorktreeCommonDir,
+  augmentLinkedWorktreeLaunchArgs,
   upsertTopLevelTomlString,
   collectInheritableTeamWorkerArgs,
   resolveTeamWorkerLaunchArgsEnv,
@@ -6114,6 +6118,84 @@ describe("team worker launch argument environment serialization", () => {
       ),
       /Invalid OMX_TEAM_WORKER_LAUNCH_ARGS: bypass cannot be combined with direct approval or sandbox policy/,
     );
+  });
+});
+
+describe("augmentLinkedWorktreeLaunchArgs", () => {
+  const cwd = "/tmp/worktree";
+  const linkedGitValues = (dir: string, gitArgs: string[]) => {
+    assert.equal(dir, cwd);
+    if (gitArgs[1] === "--git-dir") return ".git/worktrees/demo";
+    if (gitArgs[1] === "--git-common-dir") return "../.bare";
+    return undefined;
+  };
+
+  it("is opt-in and leaves args untouched by default", () => {
+    const args = augmentLinkedWorktreeLaunchArgs(cwd, ["--sandbox", "workspace-write"], {
+      gitValueReader: linkedGitValues,
+      readConfigFile: () => '[env]\nOMX_AUTO_ADD_GIT_COMMON_DIR = "0"\n',
+    });
+    assert.deepEqual(args, ["--sandbox", "workspace-write"]);
+  });
+
+  it("enables auto-add from launcher env when workspace-write is active", () => {
+    const args = augmentLinkedWorktreeLaunchArgs(cwd, ["--sandbox", "workspace-write"], {
+      env: { OMX_AUTO_ADD_GIT_COMMON_DIR: "1" },
+      gitValueReader: linkedGitValues,
+    });
+    assert.deepEqual(args, ["--sandbox", "workspace-write", "--add-dir", "/tmp/.bare"]);
+  });
+
+  it("enables auto-add from config [env] when launcher env is unset", () => {
+    const args = augmentLinkedWorktreeLaunchArgs(cwd, ["--sandbox", "workspace-write"], {
+      readConfigFile: () => '[env]\nOMX_AUTO_ADD_GIT_COMMON_DIR = "true"\n',
+      gitValueReader: linkedGitValues,
+    });
+    assert.deepEqual(args, ["--sandbox", "workspace-write", "--add-dir", "/tmp/.bare"]);
+  });
+
+  it("does not add the common dir outside workspace-write", () => {
+    const args = augmentLinkedWorktreeLaunchArgs(cwd, ["--sandbox", "read-only"], {
+      env: { OMX_AUTO_ADD_GIT_COMMON_DIR: "1" },
+      gitValueReader: linkedGitValues,
+    });
+    assert.deepEqual(args, ["--sandbox", "read-only"]);
+  });
+
+  it("does not duplicate an existing add-dir", () => {
+    const args = augmentLinkedWorktreeLaunchArgs(
+      cwd,
+      ["--sandbox", "workspace-write", "--add-dir", "/tmp/.bare"],
+      { env: { OMX_AUTO_ADD_GIT_COMMON_DIR: "1" }, gitValueReader: linkedGitValues },
+    );
+    assert.deepEqual(args, ["--sandbox", "workspace-write", "--add-dir", "/tmp/.bare"]);
+  });
+});
+
+describe("resolveLinkedWorktreeCommonDir", () => {
+  it("returns null for non-linked repositories", () => {
+    const commonDir = resolveLinkedWorktreeCommonDir("/tmp/repo", () => ".git");
+    assert.equal(commonDir, null);
+  });
+});
+
+describe("resolveEffectiveSandboxMode", () => {
+  it("reads sandbox_mode from config when args do not override it", () => {
+    const mode = resolveEffectiveSandboxMode("/tmp/project", [], {
+      readConfigFile: () => 'sandbox_mode = "workspace-write"\n',
+    });
+    assert.equal(mode, "workspace-write");
+  });
+});
+
+describe("readTomlTableString", () => {
+  it("reads a string value from a specific table", () => {
+    const value = readTomlTableString(
+      '[env]\nOMX_AUTO_ADD_GIT_COMMON_DIR = "1"\n[shell_environment_policy]\ninherit = "core"\n',
+      "env",
+      "OMX_AUTO_ADD_GIT_COMMON_DIR",
+    );
+    assert.equal(value, "1");
   });
 });
 
