@@ -155,6 +155,9 @@ function buildExactByteHookPayload(eventName: "PreToolUse" | "PostToolUse", byte
 	assert.notEqual(payload.length, Buffer.byteLength(payload, "utf8"));
 	return payload;
 }
+
+const ESCAPED_EXEC_PATH = process.execPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 async function writeJson(path: string, value: unknown): Promise<void> {
 	await mkdir(dirname(path), { recursive: true }).catch(() => {});
 	await writeFile(path, JSON.stringify(value, null, 2));
@@ -828,7 +831,7 @@ describe("codex native hook config", () => {
 		assert.equal(preToolUse.matcher, undefined);
 		assert.match(
 			String(preToolUse.hooks?.[0]?.command || ""),
-			/codex-native-hook\.js"?$/,
+			new RegExp(`^"${ESCAPED_EXEC_PATH}" ".*codex-native-hook\\.js"$`),
 		);
 		assert.equal(preToolUse.hooks?.[0]?.statusMessage, undefined);
 

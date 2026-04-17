@@ -371,7 +371,7 @@ function parseRootKeyValues(config: string): Map<string, string> {
 }
 
 function getDefaultNotifyCommand(pkgRoot: string): string[] {
-  return ["node", join(pkgRoot, "dist", "scripts", "notify-hook.js")];
+  return [getManagedNodeCommand(), join(pkgRoot, "dist", "scripts", "notify-hook.js")];
 }
 
 export function formatTomlStringArray(values: readonly string[]): string {

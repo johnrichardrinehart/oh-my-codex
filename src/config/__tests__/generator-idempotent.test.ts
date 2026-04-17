@@ -31,6 +31,8 @@ import {
 } from "../codex-hooks.js";
 import { OMX_FIRST_PARTY_MCP_SERVER_NAMES } from "../omx-first-party-mcp.js";
 
+const ESCAPED_EXEC_PATH = process.execPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 /** Count occurrences of a pattern in text */
 function count(text: string, pattern: RegExp): number {
   return (text.match(pattern) ?? []).length;
@@ -287,6 +289,14 @@ describe("config generator idempotency (#384)", () => {
       const toml = await readFile(configPath, "utf-8");
 
       assertSingleOmxBlock(toml);
+      assert.match(
+        toml,
+        new RegExp(`^notify = \\["${ESCAPED_EXEC_PATH}", ".*notify-hook\\.js"\\]$`, "m"),
+      );
+      assert.match(
+        toml,
+        new RegExp(`^command = "${ESCAPED_EXEC_PATH}"$`, "m"),
+      );
       assert.doesNotMatch(toml, /^multi_agent\s*=/m);
       assert.match(toml, /^child_agents_md = true$/m);
       assert.match(toml, /^hooks = true$/m);
@@ -885,13 +895,128 @@ describe("config generator idempotency (#384)", () => {
       const toml = await readFile(configPath, "utf-8");
 
       assert.equal(count(toml, /^notify\s*=/gm), 1, "notify should appear once");
-      assert.match(toml, /^notify = \["node", ".*notify-hook\.js"\]$/m);
-      assert.doesNotMatch(toml, /^\s*"node",\s*$/m, "orphan fragment removed");
+      assert.match(toml, new RegExp(`^notify = \\["${ESCAPED_EXEC_PATH}", ".*notify-hook\\.js"\\]$`, "m"));
+      assert.doesNotMatch(toml, /^\s*"[^"]+",\s*$/m, "orphan fragment removed");
       assert.doesNotMatch(toml, /legacy-notify-hook\.js/, "legacy notify path removed");
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
   });
+  it("does not strip non-notify arrays that happen to mention notify-hook.js", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-idem-"));
+    try {
+      const configPath = join(wd, "config.toml");
+      const existing = [
+        "[shell_environment_policy]",
+        'inherit = "all"',
+        'fallback = [',
+        '  "node",',
+        '  "/tmp/legacy-notify-hook.js",',
+        "]",
+        "",
+      ].join("\n");
+      await writeFile(configPath, existing);
+
+      await mergeConfig(configPath, wd);
+      const toml = await readFile(configPath, "utf-8");
+
+      assert.match(toml, /^\[shell_environment_policy\]$/m);
+      assert.match(toml, /^fallback = \[$/m);
+      assert.match(toml, /^\s*"node",$/m);
+      assert.match(toml, /legacy-notify-hook\.js/);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("removes header-stripped top-level notify fragments before the first table", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-idem-"));
+    try {
+      const configPath = join(wd, "config.toml");
+      const existing = [
+        'model = "o3"',
+        '  "node",',
+        '  "/tmp/legacy-notify-hook.js",',
+        "]",
+        "",
+        "[features]",
+        "web_search = true",
+        "",
+      ].join("\n");
+      await writeFile(configPath, existing);
+
+      await mergeConfig(configPath, wd);
+      const toml = await readFile(configPath, "utf-8");
+
+      assert.match(toml, /^model = "o3"$/m);
+      assert.match(toml, /^\[features\]$/m);
+      assert.match(toml, /^web_search = true$/m);
+      assert.equal(count(toml, /^notify\s*=/gm), 1, "notify should appear once");
+      assert.doesNotMatch(toml, /legacy-notify-hook\.js/, "legacy orphan fragment removed");
+      assert.doesNotMatch(toml, /^\s*"node",$/m, "orphan node literal removed");
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+  it("seeds context keys when root model is missing and both context keys are absent", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-idem-"));
+    try {
+      const configPath = join(wd, "config.toml");
+      await writeFile(configPath, 'approval_policy = "on-failure"\n');
+
+      await mergeConfig(configPath, wd);
+      const toml = await readFile(configPath, "utf-8");
+
+      assert.match(toml, /^model = "gpt-5.5"$/m);
+      assert.match(
+        toml,
+        /^# oh-my-codex seeded behavioral defaults \(uninstall removes unchanged defaults\)$/m,
+      );
+      assert.match(toml, /^model_context_window = 250000$/m);
+      assert.match(toml, /^model_auto_compact_token_limit = 200000$/m);
+      assert.match(toml, /^# End oh-my-codex seeded behavioral defaults$/m);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
+  it("can override gpt-5.3-codex to gpt-5.5 and seed 250k context defaults", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-idem-"));
+    try {
+      const toml = buildMergedConfig('model = \"gpt-5.3-codex\"\n', wd, {
+        modelOverride: "gpt-5.5",
+      });
+
+      assert.match(toml, /^model = "gpt-5\.5"$/m);
+      assert.doesNotMatch(toml, /^model = "gpt-5\.3-codex"$/m);
+      assert.match(
+        toml,
+        /^# oh-my-codex seeded behavioral defaults \(uninstall removes unchanged defaults\)$/m,
+      );
+      assert.match(toml, /^model_context_window = 250000$/m);
+      assert.match(toml, /^model_auto_compact_token_limit = 200000$/m);
+      assert.match(toml, /^# End oh-my-codex seeded behavioral defaults$/m);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+  it("does not seed 250k context defaults for non-gpt-5.5 models", async () => {
+    const wd = await mkdtemp(join(tmpdir(), "omx-idem-"));
+    try {
+      const configPath = join(wd, "config.toml");
+      await writeFile(configPath, 'model = "o3"\n');
+
+      await mergeConfig(configPath, wd);
+      const toml = await readFile(configPath, "utf-8");
+
+      assert.match(toml, /^model = "o3"$/m, "user model preserved");
+      assert.doesNotMatch(toml, /^model_context_window = 250000$/m);
+      assert.doesNotMatch(toml, /^model_auto_compact_token_limit = 200000$/m);
+    } finally {
+      await rm(wd, { recursive: true, force: true });
+    }
+  });
+
   it("does not seed context defaults and preserves explicit context settings", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-idem-"));
     try {
