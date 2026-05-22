@@ -371,7 +371,7 @@ function parseRootKeyValues(config: string): Map<string, string> {
 }
 
 function getDefaultNotifyCommand(pkgRoot: string): string[] {
-  return [getManagedNodeCommand(), join(pkgRoot, "dist", "scripts", "notify-hook.js")];
+  return [process.execPath, join(pkgRoot, "dist", "scripts", "notify-hook.js")];
 }
 
 export function formatTomlStringArray(values: readonly string[]): string {
@@ -742,7 +742,7 @@ function stripOrphanedManagedNotify(config: string, pkgRoot: string): string {
     return config;
   }
   const managedHookPath = escapeRegExp(resolve(pkgRoot, "dist", "scripts", "notify-hook.js"));
-  return config
+  const withoutSingleLineNotify = config
     .replace(
       new RegExp(`^\\s*notify\\s*=\\s*\\["node",\\s*"${managedHookPath}"\\]\\s*$(\\n)?`, "gm"),
       "",
@@ -750,11 +750,23 @@ function stripOrphanedManagedNotify(config: string, pkgRoot: string): string {
     .replace(
       /^\s*notify\s*=\s*\["node",\s*".*notify-hook\.js"\]\s*$(\n)?/gm,
       "",
-    )
-    .replace(
-      /\n?\s*"node",\s*\n\s*".*notify-hook\.js",\s*\n\s*\]\s*(?=\n|$)/g,
-      "",
     );
+  const lines = withoutSingleLineNotify.split(/\r?\n/);
+  const kept: string[] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const previousKept = [...kept].reverse().find((line) => line.trim() !== "");
+    const isStandaloneManagedNotifyFragment =
+      /^\s*"node",\s*$/.test(lines[index] ?? "") &&
+      /^\s*".*notify-hook\.js",\s*$/.test(lines[index + 1] ?? "") &&
+      /^\s*\]\s*$/.test(lines[index + 2] ?? "") &&
+      !/=\s*\[\s*$/.test(previousKept ?? "");
+    if (isStandaloneManagedNotifyFragment) {
+      index += 2;
+      continue;
+    }
+    kept.push(lines[index]);
+  }
+  return kept.join("\n");
 }
 
 /**

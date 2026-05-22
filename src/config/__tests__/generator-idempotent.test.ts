@@ -285,7 +285,9 @@ describe("config generator idempotency (#384)", () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-idem-"));
     try {
       const configPath = join(wd, "config.toml");
-      await mergeConfig(configPath, wd);
+      await mergeConfig(configPath, wd, {
+        codexHooksFile: "/tmp/codex/hooks.json",
+      });
       const toml = await readFile(configPath, "utf-8");
 
       assertSingleOmxBlock(toml);
@@ -298,6 +300,7 @@ describe("config generator idempotency (#384)", () => {
         new RegExp(`^command = "${ESCAPED_EXEC_PATH}"$`, "m"),
       );
       assert.doesNotMatch(toml, /^multi_agent\s*=/m);
+      assertSingleManagedHookTrustState(toml);
       assert.match(toml, /^child_agents_md = true$/m);
       assert.match(toml, /^hooks = true$/m);
       assert.match(toml, /^goals = true$/m);

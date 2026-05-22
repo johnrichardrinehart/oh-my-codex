@@ -5717,7 +5717,7 @@ describe("buildDetachedTmuxPaneCommand", () => {
       "/usr/bin/zsh",
     );
     assert.ok(
-      result.startsWith("'/usr/bin/zsh' -lc "),
+      result.startsWith("'/usr/bin/zsh' -c "),
       "should use the requested shell",
     );
     assert.ok(

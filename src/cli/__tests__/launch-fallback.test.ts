@@ -761,7 +761,7 @@ printf 'fake-codex:%s\n' "$*"
 
       const result = runOmx(repo, ['--direct', '--worktree', '--version'], {
         HOME: home,
-        PATH: `${fakeBin}:/usr/bin:/bin`,
+        PATH: `${fakeBin}:${process.env.PATH ?? '/usr/bin:/bin'}`,
         OMX_AUTO_UPDATE: '0',
         OMX_NOTIFY_FALLBACK: '0',
         OMX_HOOK_DERIVED_SIGNALS: '0',
@@ -806,7 +806,7 @@ printf 'fake-codex:%s\n' "$*"
 
       const result = runOmx(repo, ['--direct', '--worktree', '--version'], {
         HOME: home,
-        PATH: `${fakeBin}:/usr/bin:/bin`,
+        PATH: `${fakeBin}:${process.env.PATH ?? '/usr/bin:/bin'}`,
         OMX_AUTO_UPDATE: '0',
         OMX_NOTIFY_FALLBACK: '0',
         OMX_HOOK_DERIVED_SIGNALS: '0',

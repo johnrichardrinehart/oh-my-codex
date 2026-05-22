@@ -6776,7 +6776,7 @@ export function buildDetachedTmuxPaneCommand(
   const rawShell =
     shellPath && shellPath.trim() !== "" ? shellPath.trim() : "/bin/sh";
   const shellBin = ALLOWED_SHELLS.has(rawShell) ? rawShell : "/bin/sh";
-  return `${quoteShellArg(shellBin)} -lc ${quoteShellArg(`exec ${bareCmd}`)}`;
+  return `${quoteShellArg(shellBin)} -c ${quoteShellArg(`exec ${bareCmd}`)}`;
 }
 
 function quoteShellArg(value: string): string {
