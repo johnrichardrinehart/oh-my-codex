@@ -95,13 +95,12 @@ import {
   upsertLocalOmxMarketplaceRegistration,
   upsertLocalOmxPluginEnablement,
 } from "./plugin-marketplace.js";
-import { escapeTomlString, readTopLevelTomlString, upsertTopLevelTomlString } from "../utils/toml.js";
+import { escapeTomlString, parseTomlStringValue, readTopLevelTomlString, upsertTopLevelTomlString } from "../utils/toml.js";
 import {
   ROOT_REASONING_EFFORTS,
   isUnsupportedRootReasoningEffort,
   normalizeUnsupportedRootReasoningEffort,
 } from "../config/models.js";
-
 
 export {
   readPersistedSetupPreferences,

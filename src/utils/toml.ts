@@ -68,7 +68,7 @@ export function upsertTopLevelTomlString(
   return out;
 }
 
-function parseTomlStringValue(value: string): string {
+export function parseTomlStringValue(value: string): string {
   const trimmed = value.trim();
   if (trimmed.startsWith('"') && trimmed.endsWith('"') && trimmed.length >= 2) {
     return trimmed.slice(1, -1);
