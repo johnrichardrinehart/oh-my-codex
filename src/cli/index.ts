@@ -7565,6 +7565,7 @@ export function buildDetachedSessionBootstrapSteps(
     "-c",
     cwd,
     ...DETACHED_LAUNCH_CONTROL_PLANE_KEYS.flatMap((key) => ["-e", `${key}=${controlPlaneEnv[key]}`]),
+    ...(pathValue ? ["-e", `PATH=${pathValue}`] : []),
     ...(workerLaunchArgs ? ["-e", `${TEAM_WORKER_LAUNCH_ARGS_ENV}=${workerLaunchArgs}`] : []),
     ...(codexHomeOverride ? ["-e", `CODEX_HOME=${codexHomeOverride}`] : []),
     ...(sqliteHomeOverride ? ["-e", `${CODEX_SQLITE_HOME_ENV}=${sqliteHomeOverride}`] : []),
@@ -8871,21 +8872,7 @@ async function runCodex(
             }
             return { acknowledged: false };
           },
-          attachOrReturn: async () => {
-            if (!attachStep) return;
-            try {
-              const startedAtMs = Date.now();
-              execTmuxFileSync(attachStep.args, { stdio: resolveInteractiveTerminalStdio() });
-              assertDetachedAttachDidNotNoop(
-                sessionName,
-                Date.now() - startedAtMs,
-                process.env,
-              );
-            } catch (error) {
-              logCliOperationFailure(error);
-              printDetachedAttachHint(sessionName);
-            }
-          },
+          attachOrReturn: async () => { if (attachStep) execTmuxFileSync(attachStep.args, { stdio: "inherit" }); },
           rollback: async (_ownedRecord, report, finalization) => {
             const attempt = async (step: DetachedRollbackStep, operation: () => Promise<void> | void): Promise<void> => {
               report.rollback.attempted.push(step);
@@ -8952,31 +8939,6 @@ async function runCodex(
                   runDetachedLeaderMutation(leaderAuthority, step.args);
                 });
               }
-              continue;
-            }
-            if (
-              finalizeStep.name === "register-resize-hook" &&
-              hookTarget &&
-              hookName
-            ) {
-              registeredHookTarget = hookTarget;
-              registeredHookName = hookName;
-            }
-            if (
-              finalizeStep.name === "register-client-attached-reconcile" &&
-              clientAttachedHookName
-            ) {
-              registeredClientAttachedHookName = clientAttachedHookName;
-            }
-            if (finalizeStep.name === "reconcile-hud-resize") {
-              registerDetachedHudLayoutReconcileHook({
-                hudPaneId,
-                detachedLeaderPaneId,
-                cwd,
-                sessionId,
-                omxBin,
-                omxRootOverride,
-              });
             }
             if (sessionCleanupCompleted) {
               await attempt("rollback", removeReleaseMarkers);
@@ -9052,12 +9014,6 @@ function killTmuxPane(paneId: string): void {
     logCliOperationFailure(err);
     // Pane may already be gone; ignore.
   }
-}
-
-function printDetachedAttachHint(sessionName: string): void {
-  process.stderr.write(
-    `[omx] Detached tmux session is still running. Attach manually with: tmux attach-session -t ${sessionName}\n`,
-  );
 }
 
 export function buildTmuxShellCommand(command: string, args: string[]): string {
