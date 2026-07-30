@@ -1385,12 +1385,6 @@ function containsHardFailure(text: string): boolean {
   return /command not found|permission denied|no such file or directory/i.test(text);
 }
 
-function hasActionableBashHardFailure(normalized: NormalizedPostToolUsePayload): boolean {
-  if (containsHardFailure(normalized.stderrText)) return true;
-  if (normalized.exitCode === null || normalized.exitCode === 0) return false;
-  return containsHardFailure(`${normalized.stderrText}\n${normalized.stdoutText}`);
-}
-
 function isShellEnvAssignment(token: string): boolean {
   return /^[A-Za-z_][A-Za-z0-9_]*=.*/.test(token);
 }

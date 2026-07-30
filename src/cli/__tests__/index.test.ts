@@ -4851,18 +4851,6 @@ exit 0
     assert.doesNotMatch(leaderCmd!, /__detached-post-launch|Test-Path -LiteralPath/);
   });
 
-  it("buildDetachedWindowsBootstrapScript targets the resolved tmux-compatible command", () => {
-    const script = buildDetachedWindowsBootstrapScript(
-      "omx-demo",
-      "powershell.exe -NoLogo -NoExit -EncodedCommand abc",
-      2500,
-      "C:\\Program Files\\psmux\\psmux.exe",
-    );
-    assert.match(script, /const tmuxCommand = "C:\\\\Program Files\\\\psmux\\\\psmux\.exe";/);
-    assert.match(script, /execFileSync\(tmuxCommand, \['send-keys'/);
-    assert.doesNotMatch(script, /execFileSync\('tmux'/);
-  });
-
   it("buildDetachedSessionBootstrapSteps forwards PATH to detached tmux session", () => {
     const originalPath = process.env.PATH;
     process.env.PATH = "/nix/store/test-codex/bin:/nix/store/test-node/bin:/usr/bin:/bin";

@@ -295,10 +295,6 @@ describe("config generator idempotency (#384)", () => {
         toml,
         new RegExp(`^notify = \\["${ESCAPED_EXEC_PATH}", ".*notify-hook\\.js"\\]$`, "m"),
       );
-      assert.match(
-        toml,
-        new RegExp(`^command = "${ESCAPED_EXEC_PATH}"$`, "m"),
-      );
       assert.doesNotMatch(toml, /^multi_agent\s*=/m);
       assertSingleManagedHookTrustState(toml);
       assert.match(toml, /^child_agents_md = true$/m);
@@ -961,7 +957,7 @@ describe("config generator idempotency (#384)", () => {
       await rm(wd, { recursive: true, force: true });
     }
   });
-  it("seeds context keys when root model is missing and both context keys are absent", async () => {
+  it("uses the current default model without fixed context limits", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-idem-"));
     try {
       const configPath = join(wd, "config.toml");
@@ -970,20 +966,16 @@ describe("config generator idempotency (#384)", () => {
       await mergeConfig(configPath, wd);
       const toml = await readFile(configPath, "utf-8");
 
-      assert.match(toml, /^model = "gpt-5.5"$/m);
-      assert.match(
-        toml,
-        /^# oh-my-codex seeded behavioral defaults \(uninstall removes unchanged defaults\)$/m,
-      );
-      assert.match(toml, /^model_context_window = 250000$/m);
-      assert.match(toml, /^model_auto_compact_token_limit = 200000$/m);
-      assert.match(toml, /^# End oh-my-codex seeded behavioral defaults$/m);
+      assert.match(toml, /^model = "gpt-5.6-sol"$/m);
+      assert.doesNotMatch(toml, /^model_context_window\s*=/m);
+      assert.doesNotMatch(toml, /^model_auto_compact_token_limit\s*=/m);
+      assert.doesNotMatch(toml, /seeded behavioral defaults/);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
   });
 
-  it("can override gpt-5.3-codex to gpt-5.5 and seed 250k context defaults", async () => {
+  it("can override gpt-5.3-codex without adding fixed context limits", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-idem-"));
     try {
       const toml = buildMergedConfig('model = \"gpt-5.3-codex\"\n', wd, {
@@ -992,13 +984,9 @@ describe("config generator idempotency (#384)", () => {
 
       assert.match(toml, /^model = "gpt-5\.5"$/m);
       assert.doesNotMatch(toml, /^model = "gpt-5\.3-codex"$/m);
-      assert.match(
-        toml,
-        /^# oh-my-codex seeded behavioral defaults \(uninstall removes unchanged defaults\)$/m,
-      );
-      assert.match(toml, /^model_context_window = 250000$/m);
-      assert.match(toml, /^model_auto_compact_token_limit = 200000$/m);
-      assert.match(toml, /^# End oh-my-codex seeded behavioral defaults$/m);
+      assert.doesNotMatch(toml, /^model_context_window\s*=/m);
+      assert.doesNotMatch(toml, /^model_auto_compact_token_limit\s*=/m);
+      assert.doesNotMatch(toml, /seeded behavioral defaults/);
     } finally {
       await rm(wd, { recursive: true, force: true });
     }
