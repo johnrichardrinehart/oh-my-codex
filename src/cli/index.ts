@@ -7462,6 +7462,7 @@ export function buildDetachedSessionBootstrapSteps(
     sessionName,
     "-c",
     cwd,
+    ...(pathValue ? ["-e", `PATH=${pathValue}`] : []),
     ...DETACHED_LAUNCH_CONTROL_PLANE_KEYS.flatMap((key) => ["-e", `${key}=${controlPlaneEnv[key]}`]),
     ...(workerLaunchArgs ? ["-e", `${TEAM_WORKER_LAUNCH_ARGS_ENV}=${workerLaunchArgs}`] : []),
     ...(codexHomeOverride ? ["-e", `CODEX_HOME=${codexHomeOverride}`] : []),
