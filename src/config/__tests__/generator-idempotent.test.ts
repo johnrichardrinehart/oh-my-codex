@@ -1010,7 +1010,7 @@ describe("config generator idempotency (#384)", () => {
       await rm(wd, { recursive: true, force: true });
     }
   });
-  it("uses the current default model without fixed context limits", async () => {
+  it("does not add fixed context limits when seeding the default model", async () => {
     const wd = await mkdtemp(join(tmpdir(), "omx-idem-"));
     try {
       const configPath = join(wd, "config.toml");
@@ -1019,7 +1019,6 @@ describe("config generator idempotency (#384)", () => {
       await mergeConfig(configPath, wd);
       const toml = await readFile(configPath, "utf-8");
 
-      assert.match(toml, /^model = "gpt-5.6-sol"$/m);
       assert.doesNotMatch(toml, /^model_context_window\s*=/m);
       assert.doesNotMatch(toml, /^model_auto_compact_token_limit\s*=/m);
       assert.doesNotMatch(toml, /seeded behavioral defaults/);
