@@ -72,7 +72,7 @@
         package = pkgs.buildNpmPackage {
           inherit pname version src;
 
-          npmDepsHash = "sha256-nK6pcwKmv0fhsu1LBUeKL1NdekhrDa2bUrAkSsl95os=";
+          npmDepsHash = "sha256-+wAfos2ArMNIIe0HKQy2SMGh24i9APm0RliXljRSvA0=";
 
           nativeBuildInputs = [
             pkgs.makeWrapper
